@@ -7,8 +7,7 @@ export default function Sidebar() {
     { name: 'Home', path: '/', icon: <Home size={18} /> },
     { name: 'Geo Query', path: '/query', icon: <Search size={18} /> },
     { name: 'Explore Map', path: '/explore', icon: <Map size={18} /> },
-    { name: 'Layer Explorer', path: '/layers', icon: <Layers size={18} /> },
-    { name: 'Try Queries', path: '/try', icon: <HelpCircle size={18} /> },
+    /*{ name: 'Layer Explorer', path: '/layers', icon: <Layers size={18} /> },*/
     { name: 'Recent Queries', path: '/history', icon: <History size={18} /> },
   ];
 
@@ -18,7 +17,6 @@ export default function Sidebar() {
         <div className="bg-green-500 p-2 rounded-lg text-xl">🌍</div>
         <div>
           <h1 className="text-xl font-bold leading-tight">GeoAsk</h1>
-          <p className="text-xs text-green-300">Thodupuzha</p>
         </div>
       </div>
       
@@ -43,7 +41,6 @@ export default function Sidebar() {
       {/* Clean bottom branding instead of the fake map box */}
       <div className="p-6 border-t border-green-800 text-xs text-green-400">
         <p>RAG-LLM Spatial Interface</p>
-        <p className="mt-1">Govt. Engineering College Idukki</p>
       </div>
     </aside>
   );

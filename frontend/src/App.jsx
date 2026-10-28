@@ -6,7 +6,7 @@ import Query from './pages/Query';
 import Processing from './pages/Processing';
 import Result from './pages/Result';
 import Explore from './pages/Explore';
-import TryQueries from './pages/TryQueries';
+
 import History from './pages/History';
 import LayerExplorer from "./pages/LayerExplorer";
 
@@ -23,7 +23,6 @@ export default function App() {
             <Route path="/result" element={<Result />} />
             <Route path="/explore" element={<Explore />} />
             <Route path="/layers" element={<LayerExplorer />} />
-            <Route path="/try" element={<TryQueries />} />
             <Route path="/history" element={<History />} />
           </Routes>
         </main>

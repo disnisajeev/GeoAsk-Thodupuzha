@@ -1,6 +1,7 @@
 
 import json
 import math
+import re
 
 from qwen_service import client, QWEN_MODEL
 
@@ -59,17 +60,131 @@ LAYER_MAP = {
 }
 
 
-def plan_query(user_query: str) -> dict:
-    """Create and validate a GIS query plan using Qwen3."""
+SPATIAL_TERMS = re.compile(
+    r"\b("
+    r"near|nearby|within|distance|around|buffer|"
+    r"intersect|intersection|overlap|nearest|closest|"
+    r"farthest|farther|less than|more than|"
+    r"kilometres?|kilometers?|metres?|meters?|km"
+    r")\b",
+    re.IGNORECASE,
+)
 
-    if not isinstance(user_query, str) or not user_query.strip():
-        return {
-            "operation": "unsupported",
-            "target_layer": "buildings",
-            "reference_layer": None,
-            "distance_m": None,
-            "explanation": "Please enter a GIS query.",
-        }
+
+LIST_INTENT = re.compile(
+    r"\b(show|list|display|get|view)\b",
+    re.IGNORECASE,
+)
+
+
+def _unsupported_plan(explanation: str) -> dict:
+    """Return a consistent unsupported-query plan."""
+    return {
+        "operation": "unsupported",
+        "target_layer": "buildings",
+        "reference_layer": None,
+        "distance_m": None,
+        "explanation": explanation,
+    }
+
+
+def try_simple_list_query(user_query: str):
+    """
+    Create a plan directly for unambiguous listing queries.
+
+    Simple listing requests do not need an LLM call.
+    Spatial or ambiguous requests are sent to Qwen3.
+    """
+    query = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        user_query.lower(),
+    )
+    query = " ".join(query.split())
+
+    # Do not bypass the planner for spatial queries.
+    if SPATIAL_TERMS.search(query):
+        return None
+
+    if not LIST_INTENT.search(query):
+        return None
+
+    padded_query = f" {query} "
+    matches = []
+
+    # Match longer phrases before shorter aliases.
+    for alias in sorted(
+        LAYER_MAP,
+        key=len,
+        reverse=True,
+    ):
+        if f" {alias} " in padded_query:
+            matches.append(
+                (alias, LAYER_MAP[alias])
+            )
+
+    if not matches:
+        return None
+
+    longest_length = len(matches[0][0])
+
+    longest_matches = [
+        item
+        for item in matches
+        if len(item[0]) == longest_length
+    ]
+
+    matched_layers = {
+        layer
+        for _, layer in longest_matches
+    }
+
+    # Avoid guessing when the query is ambiguous.
+    if len(matched_layers) != 1:
+        return None
+
+    target_layer = next(iter(matched_layers))
+
+    print(
+        "[QUERY PLANNER] Simple listing query; "
+        "skipping Qwen3."
+    )
+
+    return {
+        "operation": "list_features",
+        "target_layer": target_layer,
+        "reference_layer": None,
+        "distance_m": None,
+        "explanation": (
+            f"Displaying all available features in the "
+            f"{target_layer} layer."
+        ),
+    }
+
+
+def plan_query(user_query: str) -> dict:
+    """
+    Convert a natural-language question into a validated GIS plan.
+
+    Simple listing queries use a local fast path.
+    Other supported queries use Qwen3.
+    """
+
+    if (
+        not isinstance(user_query, str)
+        or not user_query.strip()
+    ):
+        return _unsupported_plan(
+            "Please enter a GIS query."
+        )
+
+    user_query = user_query.strip()
+
+    # Fast path: avoid LLM inference for simple listing queries.
+    simple_plan = try_simple_list_query(user_query)
+
+    if simple_plan is not None:
+        return simple_plan
 
     schema = {
         "type": "object",
@@ -109,7 +224,7 @@ def plan_query(user_query: str) -> dict:
     prompt = f"""
 Plan a GIS query for Thodupuzha.
 
-Available layers and their meanings:
+Available layers and meanings:
 - education: schools, colleges, educational institutions
 - healthcare: hospitals, clinics, healthcare facilities
 - pharmacies: pharmacies
@@ -125,54 +240,50 @@ Available layers and their meanings:
 Return only the requested JSON object.
 
 Rules:
-1. For a simple request to display or list features, use list_features.
-2. For a request involving proximity or distance between layers,
-   use within_distance.
-3. In a proximity request, target_layer is the feature type
+1. Displaying or listing features means list_features.
+2. Proximity or distance queries mean within_distance.
+3. In a proximity query, target_layer is the feature type
    the user wants to find.
-4. reference_layer is the feature type the target must be near.
-5. Convert kilometres to metres. For example, 2 km = 2000 metres.
+4. reference_layer is the feature type it must be near.
+5. Convert kilometres to metres.
 6. Preserve the requested distance accurately.
-7. If a proximity request does not specify a distance, use a reasonable
-   default of 500 metres and explain this assumption.
-8. For list_features, reference_layer and distance_m must be null.
-9. If the requested layer or operation cannot be represented by the
-   available layers and operations, use unsupported.
-10. Never invent layers, distances, GIS results, or feature counts.
-11. Do not execute GIS operations. Only create a query plan.
-12. Use only the exact layer identifiers listed above.
-13. If the user asks for an unavailable layer, do not substitute an
-    unrelated available layer.
-14. For unsupported requests, set reference_layer and distance_m to null.
+7. If proximity is requested without a distance, use 500
+   metres and explain the assumption.
+8. For list_features, reference_layer and distance_m are null.
+9. If the requested operation cannot be represented, use unsupported.
+10. Never invent layers, distances, results, or feature counts.
+11. Only create a plan; do not execute GIS operations.
+12. Use exact layer identifiers.
+13. Never substitute an unrelated layer for an unavailable one.
+14. For unsupported requests, reference_layer and distance_m
+    must be null.
 
 Examples:
 
 Question: Show all schools
-Plan: operation=list_features, target_layer=education,
-      reference_layer=null, distance_m=null
+Plan: {{"operation":"list_features",
+"target_layer":"education","reference_layer":null,
+"distance_m":null,"explanation":"Show schools"}}
 
 Question: Find schools within 500 metres of hospitals
-Plan: operation=within_distance, target_layer=education,
-      reference_layer=healthcare, distance_m=500
-
-Question: Which schools are less than 500 m from hospitals?
-Plan: operation=within_distance, target_layer=education,
-      reference_layer=healthcare, distance_m=500
+Plan: {{"operation":"within_distance",
+"target_layer":"education","reference_layer":"healthcare",
+"distance_m":500,"explanation":"Schools near hospitals"}}
 
 Question: Find shops within 2 km of roads
-Plan: operation=within_distance, target_layer=shops,
-      reference_layer=roads, distance_m=2000
-
-Question: Find pharmacies near hospitals
-Plan: operation=within_distance, target_layer=pharmacies,
-      reference_layer=healthcare, distance_m=500
+Plan: {{"operation":"within_distance",
+"target_layer":"shops","reference_layer":"roads",
+"distance_m":2000,"explanation":"Shops near roads"}}
 
 Question: Show all airports
-Plan: operation=unsupported, target_layer=buildings,
-      reference_layer=null, distance_m=null
+Plan: {{"operation":"unsupported",
+"target_layer":"buildings","reference_layer":null,
+"distance_m":null,"explanation":"Airports are unavailable"}}
 
 User question: {user_query}
 """
+
+    print("[QUERY PLANNER] Sending query to Qwen3...")
 
     response = client.chat(
         model=QWEN_MODEL,
@@ -180,8 +291,9 @@ User question: {user_query}
             {
                 "role": "system",
                 "content": (
-                    "Convert GIS questions into validated structured "
-                    "query plans. Follow the supplied schema and rules."
+                    "Convert GIS questions into validated "
+                    "structured query plans. Follow the schema "
+                    "and rules exactly. Do not include reasoning."
                 ),
             },
             {
@@ -194,14 +306,18 @@ User question: {user_query}
         stream=False,
         options={
             "temperature": 0,
-            "num_predict": 180,
+            "num_predict": 128,
         },
     )
 
-    raw = (response.message.content or "").strip()
+    raw = (
+        response.message.content or ""
+    ).strip()
 
     if not raw:
-        raise ValueError("Qwen3 returned an empty query plan.")
+        raise ValueError(
+            "Qwen3 returned an empty query plan."
+        )
 
     try:
         plan = json.loads(raw)
@@ -211,7 +327,9 @@ User question: {user_query}
         ) from exc
 
     if not isinstance(plan, dict):
-        raise ValueError("The query plan must be a JSON object.")
+        raise ValueError(
+            "The query plan must be a JSON object."
+        )
 
     required_fields = {
         "operation",
@@ -222,7 +340,9 @@ User question: {user_query}
     }
 
     if not required_fields.issubset(plan):
-        raise ValueError("The query plan is missing required fields.")
+        raise ValueError(
+            "The query plan is missing required fields."
+        )
 
     operation = plan["operation"]
     target = plan["target_layer"]
@@ -240,11 +360,16 @@ User question: {user_query}
     if target not in ALLOWED_LAYERS:
         raise ValueError("Invalid target layer.")
 
-    if reference is not None and reference not in ALLOWED_LAYERS:
+    if (
+        reference is not None
+        and reference not in ALLOWED_LAYERS
+    ):
         raise ValueError("Invalid reference layer.")
 
     if not isinstance(explanation, str):
-        raise ValueError("The explanation must be a string.")
+        raise ValueError(
+            "The explanation must be a string."
+        )
 
     if operation == "list_features":
         if reference is not None or distance is not None:

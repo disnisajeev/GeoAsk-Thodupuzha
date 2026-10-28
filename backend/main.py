@@ -1,5 +1,7 @@
 
 import json
+import time
+
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -23,7 +25,7 @@ from spatial_query import execute_query_plan
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 app = FastAPI(
-    title="GeoAsk-Thodupuzha API",
+    title="GeoAsk",
     description="Natural-language GIS query and visualization API",
     version="1.0.0",
 )

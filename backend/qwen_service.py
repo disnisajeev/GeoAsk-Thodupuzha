@@ -1,5 +1,6 @@
 
 import os
+import time
 import ollama
 
 OLLAMA_HOST = os.getenv(
@@ -8,7 +9,13 @@ OLLAMA_HOST = os.getenv(
 )
 QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen3:4b")
 
-client = ollama.Client(host=OLLAMA_HOST)
+# Keep the timeout configurable for slower computers.
+OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120"))
+
+client = ollama.Client(
+    host=OLLAMA_HOST,
+    timeout=OLLAMA_TIMEOUT,
+)
 
 
 def check_qwen_connection():
@@ -38,42 +45,52 @@ def check_qwen_connection():
 
 
 def ask_qwen(prompt: str) -> str:
-    """Generate and return a visible answer from Qwen3."""
-    response = client.chat(
-        model=QWEN_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are a concise GIS assistant. "
-                    "Answer directly in one or two sentences. "
-                    "Do not explain your reasoning."
-                ),
+    """Generate a concise answer and log inference duration."""
+    start_time = time.perf_counter()
+
+    try:
+        response = client.chat(
+            model=QWEN_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a concise GIS assistant. "
+                        "Follow the user's requested output format exactly. "
+                        "For query planning, return only the requested JSON. "
+                        "Do not include reasoning or unnecessary explanations."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
+            ],
+            stream=False,
+            think=False,
+            options={
+                "num_predict": 128,
+                "temperature": 0.0,
             },
-            {
-                "role": "user",
-                "content": prompt,
-            },
-        ],
-        stream=False,
-        think=False,
-        options={
-            "num_predict": 256,
-            "temperature": 0.0,
-        },
-    )
-
-   
-    answer = (response.message.content or "").strip()
-
-    # Remove reasoning text if it appears in the content.
-    if "</think>" in answer:
-        answer = answer.rsplit("</think>", 1)[-1].strip()
-
-    if not answer:
-        raise RuntimeError(
-            "Qwen3 returned an empty answer. "
-            "Inspect the response thinking field and model output."
         )
 
-    return answer
+        answer = (response.message.content or "").strip()
+
+        # Some model responses may include reasoning markers.
+        if "</think>" in answer:
+            answer = answer.rsplit("</think>", 1)[-1].strip()
+
+        elapsed = time.perf_counter() - start_time
+        print(f"[QWEN] Inference completed in {elapsed:.2f}s")
+
+        if not answer:
+            raise RuntimeError(
+                "Qwen3 returned an empty answer."
+            )
+
+        return answer
+
+    except Exception as exc:
+        elapsed = time.perf_counter() - start_time
+        print(f"[QWEN] Failed after {elapsed:.2f}s: {exc}")
+        raise
